@@ -1,0 +1,320 @@
+name: Qualitzer - Windows x64
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  SCITER_RUST_VERSION: '1.75'
+  RUST_VERSION: '1.75'
+  MAC_RUST_VERSION: '1.81'
+  CARGO_NDK_VERSION: 3.1.2
+  SCITER_ARMV7_CMAKE_VERSION: 3.29.7
+  SCITER_NASM_DEBVERSION: 2.15.05-1
+  LLVM_VERSION: 15.0.6
+  FLUTTER_VERSION: 3.24.5
+  ANDROID_FLUTTER_VERSION: 3.24.5
+  FLUTTER_WINDOWS_ARM_VERSION: 3.44.0
+  FLUTTER_ELINUX_VERSION: 3.16.9
+  TAG_NAME: qualitzer-test
+  VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+  VCPKG_COMMIT_ID: 120deac3062162151622ca4860575a33844ba10b
+  ARMV7_VCPKG_COMMIT_ID: 6f29f12e82a8293156836ad81cc9bf5af41fe836
+  VERSION: 1.4.9
+  NDK_VERSION: r28c
+  UPLOAD_ARTIFACT: 'true'
+  SIGN_BASE_URL: '-2'
+jobs:
+  generate-bridge:
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+        - target: x86_64-unknown-linux-gnu
+          os: ubuntu-22.04
+          extra-build-args: ''
+          flutter-version: 3.22.3
+          artifact-name: bridge-artifact
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      with:
+        submodules: recursive
+    - name: Install prerequisites
+      run: "sudo apt-get install ca-certificates -y\nsudo apt-get update -y\nsudo apt-get install -y \\\n  clang \\\n  cmake\
+        \ \\\n  curl \\\n  gcc \\\n  git \\\n  g++ \\\n  libclang-dev \\\n  libgtk-3-dev \\\n  llvm-dev \\\n  nasm \\\n  ninja-build\
+        \ \\\n  pkg-config \\\n  wget\n"
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+        targets: ${{ matrix.job.target }}
+        components: rustfmt
+    - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      with:
+        prefix-key: bridge-${{ matrix.job.os }}
+    - name: Cache Bridge
+      id: cache-bridge
+      uses: actions/cache@v4
+      with:
+        path: /tmp/flutter_rust_bridge
+        key: bridge-${{ matrix.job.flutter-version }}
+    - name: Install flutter
+      uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      with:
+        channel: stable
+        flutter-version: ${{ matrix.job.flutter-version }}
+        cache: true
+    - name: Install flutter rust bridge deps
+      shell: bash
+      run: "cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked\ncargo install flutter_rust_bridge_codegen\
+        \ --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features \"uuid\" --locked\nif [[ \"${{ matrix.job.flutter-version\
+        \ }}\" == \"3.22.3\" ]]; then\n  # Default Flutter 3.22.3: extended_text 14 needs a newer Dart, so downgrade for resolution.\n\
+        \  sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml\nelse\n  # Flutter 3.44 bridge\
+        \ for Windows arm64: match that build's source/pubspec state so the\n  # generated *.freezed.dart compiles against\
+        \ the same Flutter/freezed it resolves.\n  bash .github/patches/apply_flutter_3.44_source_patches.sh\nfi\npushd flutter\
+        \ && flutter pub get && popd\n"
+    - name: Run flutter rust bridge
+      run: '~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart
+        --c-output ./flutter/macos/Runner/bridge_generated.h
+
+        cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+        '
+    - name: Upload Artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ${{ matrix.job.artifact-name }}
+        path: './src/bridge_generated.rs
+
+          ./src/bridge_generated.io.rs
+
+          ./flutter/lib/generated_bridge.dart
+
+          ./flutter/lib/generated_bridge.freezed.dart
+
+          ./flutter/macos/Runner/bridge_generated.h
+
+          ./flutter/ios/Runner/bridge_generated.h
+
+          '
+    env:
+      CARGO_EXPAND_VERSION: 1.0.95
+      FLUTTER_RUST_BRIDGE_VERSION: 1.80.1
+      RUST_VERSION: '1.75'
+    timeout-minutes: 90
+  build-RustDeskTempTopMostWindow:
+    uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+        - target: windows-2022
+          platform: x64
+    with:
+      upload-artifact: true
+      target: ${{ matrix.job.target }}
+      configuration: Release
+      platform: ${{ matrix.job.platform }}
+      target_version: Windows10
+  build-for-windows-flutter:
+    name: Qualitzer Soporte - Windows x64
+    needs:
+    - build-RustDeskTempTopMostWindow
+    - generate-bridge
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+        - target: x86_64-pc-windows-msvc
+          os: windows-2022
+          arch: x86_64
+          flutter-arch: x64
+          vcpkg-triplet: x64-windows-static
+          build-args: --vram
+    steps:
+    - name: Export GitHub Actions cache environment variables
+      uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
+      with:
+        script: 'core.exportVariable(''ACTIONS_CACHE_URL'', process.env.ACTIONS_CACHE_URL || '''');
+
+          core.exportVariable(''ACTIONS_RUNTIME_TOKEN'', process.env.ACTIONS_RUNTIME_TOKEN || '''');
+
+          '
+    - name: Checkout source code
+      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      with:
+        submodules: recursive
+    - name: Restore bridge files
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        name: ${{ matrix.job.arch == 'aarch64' && 'bridge-artifact-flutter-3.44' || 'bridge-artifact' }}
+        path: ./
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0
+      with:
+        version: ${{ env.LLVM_VERSION }}
+    - name: Install flutter
+      id: flutter
+      uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
+      with:
+        channel: stable
+        flutter-version: ${{ matrix.job.arch == 'aarch64' && env.FLUTTER_WINDOWS_ARM_VERSION || env.FLUTTER_VERSION }}
+        architecture: x64
+    - name: Force arm64 Dart SDK + engine
+      if: ${{ matrix.job.arch == 'aarch64' }}
+      run: "$flutterRoot = \"${{ steps.flutter.outputs['CACHE-PATH'] }}\"\nWrite-Host \"PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE\"\
+        \nWrite-Host \"Flutter root: $flutterRoot\"\nRemove-Item -Force \"$flutterRoot\\bin\\cache\\engine-dart-sdk.stamp\"\
+        \ -ErrorAction SilentlyContinue\n& \"$flutterRoot\\bin\\internal\\update_dart_sdk.ps1\"\n# Confirm the Dart we ended\
+        \ up with is arm64 (\"on windows_arm64\"); fail loudly if not.\n$dartVer = & \"$flutterRoot\\bin\\dart.bat\" --version\
+        \ 2>&1 | Out-String\nWrite-Host $dartVer\nif ($dartVer -notmatch \"windows_arm64\") {\n  Write-Error \"Expected an\
+        \ arm64 Dart SDK but got: $dartVer\"\n  exit 1\n}\n& \"$flutterRoot\\bin\\flutter.bat\" precache --windows\n# Fail\
+        \ fast if precache pulled the wrong-arch Windows engine: an arm64 Dart should\n# fetch windows-arm64 engine artifacts.\
+        \ Bailing here saves the ~25min Rust build.\n$engineDir = \"$flutterRoot\\bin\\cache\\artifacts\\engine\"\nWrite-Host\
+        \ \"Engine artifacts present:\"\nGet-ChildItem $engineDir -Directory | Select-Object -ExpandProperty Name | Write-Host\n\
+        if (-not (Test-Path \"$engineDir\\windows-arm64-release\")) {\n  Write-Error \"Expected windows-arm64-release engine\
+        \ artifacts but they are missing (wrong-arch SDK).\"\n  exit 1\n}\n"
+    - name: Replace engine with rustdesk custom flutter engine
+      if: ${{ matrix.job.arch == 'x86_64' }}
+      run: 'flutter doctor -v
+
+        flutter precache --windows
+
+        Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile
+        windows-x64-release.zip
+
+        Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+
+        mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+
+        '
+    - name: Patch flutter
+      if: ${{ matrix.job.arch == 'x86_64' }}
+      shell: bash
+      run: 'cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
+
+        cd $(dirname $(dirname $(which flutter)))
+
+        [[ "3.24.5" == ${{env.FLUTTER_VERSION}} ]] && git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+
+        '
+    - name: Patch RustDesk sources for Flutter 3.44 (arm64)
+      if: ${{ matrix.job.arch == 'aarch64' }}
+      shell: bash
+      run: bash .github/patches/apply_flutter_3.44_source_patches.sh
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+      with:
+        toolchain: ${{ env.SCITER_RUST_VERSION }}
+        targets: ${{ matrix.job.target }}
+        components: rustfmt
+    - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      with:
+        prefix-key: ${{ matrix.job.os }}
+    - name: Setup vcpkg with Github Actions binary cache
+      uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+      with:
+        vcpkgDirectory: C:\vcpkg
+        vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+        doNotCache: false
+    - name: Install vcpkg dependencies
+      env:
+        VCPKG_DEFAULT_HOST_TRIPLET: ${{ matrix.job.vcpkg-triplet }}
+      run: "if ! $VCPKG_ROOT/vcpkg \\\n  install \\\n  --triplet ${{ matrix.job.vcpkg-triplet }} \\\n  --x-install-root=\"\
+        $VCPKG_ROOT/installed\"; then\n  find \"${VCPKG_ROOT}/\" -name \"*.log\" | while read -r _1; do\n    echo \"$_1:\"\
+        \n    echo \"======\"\n    cat \"$_1\"\n    echo \"======\"\n    echo \"\"\n  done\n  exit 1\nfi\nhead -n 100 \"${VCPKG_ROOT}/buildtrees/ffmpeg/build-${{\
+        \ matrix.job.vcpkg-triplet }}-rel-out.log\" || true\n"
+      shell: bash
+    - name: Set SODIUM_LIB_DIR (arm64)
+      if: ${{ matrix.job.arch == 'aarch64' }}
+      shell: bash
+      run: echo "SODIUM_LIB_DIR=$VCPKG_ROOT/installed/${{ matrix.job.vcpkg-triplet }}/lib" >> "$GITHUB_ENV"
+    - name: Aplicar personalizacion Qualitzer
+      shell: bash
+      run: 'set -euo pipefail
+
+        git -C libs/hbb_common apply --check ../../branding/hbb-common.patch
+
+        git -C libs/hbb_common apply ../../branding/hbb-common.patch
+
+        cp branding/qualitzer-icon.ico res/icon.ico
+
+        cp branding/qualitzer-icon.ico flutter/windows/runner/resources/app_icon.ico
+
+        cp branding/qualitzer-icon.ico flutter/assets/icon.ico
+
+        cp branding/qualitzer-icon.png flutter/assets/logo.png
+
+        '
+    - name: Build rustdesk
+      run: "# Windows: build RustDesk\n# --hwcodec is shared by all Windows targets; per-target extras (e.g. --vram) come\
+        \ from the matrix\npython3 .\\build.py --portable --flutter --skip-portable-pack --hwcodec ${{ matrix.job.build-args\
+        \ }}\nmv ./flutter/build/windows/${{ matrix.job.flutter-arch }}/runner/Release ./rustdesk\n\n# Download usbmmidd_v2.zip\
+        \ and extract it to ./rustdesk\nInvoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip\
+        \ -OutFile usbmmidd_v2.zip\nExpand-Archive usbmmidd_v2.zip -DestinationPath .\nRemove-Item -Path usbmmidd_v2\\Win32\
+        \ -Recurse\nRemove-Item -Path \"usbmmidd_v2\\deviceinstaller64.exe\", \"usbmmidd_v2\\deviceinstaller.exe\", \"usbmmidd_v2\\\
+        usbmmidd.bat\"\nmv -Force .\\usbmmidd_v2 ./rustdesk\n\n# Download printer driver files and extract them to ./rustdesk\n\
+        try {\n  Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/rustdesk_printer_driver_v4-1.4.zip\
+        \ -OutFile rustdesk_printer_driver_v4-1.4.zip\n  Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/printer_driver_adapter.zip\
+        \ -OutFile printer_driver_adapter.zip\n  Invoke-WebRequest -Uri https://github.com/rustdesk/hbb_common/releases/download/driver/sha256sums\
+        \ -OutFile sha256sums\n\n  # Check and move the files\n  $checksum_driver = (Select-String -Path .\\sha256sums -Pattern\
+        \ '^([a-fA-F0-9]{64}) \\*rustdesk_printer_driver_v4-1.4\\.zip$').Matches.Groups[1].Value\n  $downloadsum_driver =\
+        \ Get-FileHash -Path rustdesk_printer_driver_v4-1.4.zip -Algorithm SHA256\n  $checksum_adapter = (Select-String -Path\
+        \ .\\sha256sums -Pattern '^([a-fA-F0-9]{64}) \\*printer_driver_adapter\\.zip$').Matches.Groups[1].Value\n  $downloadsum_adapter\
+        \ = Get-FileHash -Path printer_driver_adapter.zip -Algorithm SHA256\n  if ($checksum_driver -eq $downloadsum_driver.Hash\
+        \ -and $checksum_adapter -eq $downloadsum_adapter.Hash) {\n      Write-Output \"rustdesk_printer_driver_v4-1.4, checksums\
+        \ match, extract the file.\"\n      Expand-Archive rustdesk_printer_driver_v4-1.4.zip -DestinationPath .\n      mkdir\
+        \ ./rustdesk/drivers\n      mv -Force .\\rustdesk_printer_driver_v4-1.4 ./rustdesk/drivers/RustDeskPrinterDriver\n\
+        \      Expand-Archive printer_driver_adapter.zip -DestinationPath .\n      mv -Force .\\printer_driver_adapter.dll\
+        \ ./rustdesk\n  } elseif ($checksum_driver -ne $downloadsum_driver.Hash) {\n      Write-Output \"rustdesk_printer_driver_v4-1.4,\
+        \ checksums do not match, ignore the file.\"\n  } else {\n      Write-Output \"printer_driver_adapter.dll, checksums\
+        \ do not match, ignore the file.\"\n  }\n} catch {\n    Write-Host \"Ingore the printer driver error.\"\n}\n"
+    - name: find Runner.res
+      continue-on-error: true
+      shell: bash
+      run: "runner_res=$(find . -name \"Runner.res\");\nif [ \"$runner_res\" == \"\" ]; then\n  echo \"Runner.res: not found\"\
+        ;\nelse\n  echo \"Runner.res: $runner_res\";\n  cp $runner_res ./libs/portable/Runner.res;\n  echo \"list ./libs/portable/Runner.res\"\
+        ;\n  ls -l ./libs/portable/Runner.res;\nfi\n"
+    - name: Download RustDeskTempTopMostWindow artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      if: ${{ inputs.upload-artifact }}
+      with:
+        name: ${{ matrix.job.arch == 'aarch64' && 'topmostwindow-artifacts-ARM64' || 'topmostwindow-artifacts-x64' }}
+        path: ./rustdesk
+    - name: Build self-extracted executable
+      shell: bash
+      if: env.UPLOAD_ARTIFACT == 'true'
+      run: 'sed -i ''/dpiAware/d'' res/manifest.xml
+
+        pushd ./libs/portable
+
+        pip3 install -r requirements.txt
+
+        python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+
+        popd
+
+        mkdir -p ./SignOutput
+
+        mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
+
+        '
+    - name: Verificar recursos y preparar descarga
+      shell: pwsh
+      run: "$ErrorActionPreference = 'Stop'\n$exe = './SignOutput/rustdesk-1.4.9-x86_64.exe'\nif (!(Test-Path $exe)) { throw\
+        \ 'No se genero el ejecutable' }\n$assets = './rustdesk/data/flutter_assets/assets'\nforeach ($pair in @(\n  @('./branding/qualitzer-icon.png',\
+        \ \"$assets/logo.png\"),\n  @('./branding/qualitzer-icon.ico', \"$assets/icon.ico\")\n)) {\n  if (!(Test-Path $pair[1]))\
+        \ { throw \"Falta recurso: $($pair[1])\" }\n  if ((Get-FileHash $pair[0]).Hash -ne (Get-FileHash $pair[1]).Hash) {\n\
+        \    throw \"Recurso de marca diferente: $($pair[1])\"\n  }\n}\nNew-Item -ItemType Directory -Force ./qualitzer-dist\
+        \ | Out-Null\nCopy-Item $exe ./qualitzer-dist/Qualitzer-Soporte-1.4.9-windows-x64.exe\n$hash = (Get-FileHash ./qualitzer-dist/Qualitzer-Soporte-1.4.9-windows-x64.exe\
+        \ -Algorithm SHA256).Hash.ToLower()\n\"$hash  Qualitzer-Soporte-1.4.9-windows-x64.exe\" |\n  Set-Content ./qualitzer-dist/SHA256SUMS.txt\
+        \ -Encoding ascii"
+    - name: Guardar ejecutable de prueba
+      uses: actions/upload-artifact@v4
+      with:
+        name: Qualitzer-Soporte-Windows-x64
+        path: qualitzer-dist/
+        if-no-files-found: error
+        retention-days: 7
+    timeout-minutes: 180
