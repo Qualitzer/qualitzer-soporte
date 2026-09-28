@@ -101,6 +101,9 @@ for step in windows["steps"]:
         })
         patched = True
 
+    if name == "Download RustDeskTempTopMostWindow artifacts":
+        step.pop("if", None)
+
     steps.append(step)
 
     # Terminar despues del empaquetado: no MSI, firma ni Release.
